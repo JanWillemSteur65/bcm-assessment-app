@@ -1,0 +1,157 @@
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: bcm-assessment
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: bcm-assessment
+spec:
+  runPolicy: Serial
+  source:
+    type: Binary
+    binary: {}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  output:
+    to:
+      kind: ImageStreamTag
+      name: bcm-assessment:latest
+  triggers: []
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bcm-assessment
+  labels:
+    app: bcm-assessment
+  annotations:
+    image.openshift.io/triggers: >-
+      [{"from":{"kind":"ImageStreamTag","name":"bcm-assessment:latest"},
+        "fieldPath":"spec.template.spec.containers[?(@.name==\"bcm-assessment\")].image"}]
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bcm-assessment
+  template:
+    metadata:
+      labels:
+        app: bcm-assessment
+spec:
+  initContainers:
+    - name: wait-for-db2
+      image: registry.access.redhat.com/ubi9/ubi:latest
+      command:
+        - /bin/bash
+        - -lc
+        - |
+          if [ -z "${DB2_HOST}" ]; then
+  echo "DB2_HOST not set (no db2-conn secret). Skipping DB2 wait."
+  exit 0
+fi
+DB2_PORT_VAL="${DB2_PORT:-50000}"
+echo "Waiting for ${DB2_HOST}:${DB2_PORT_VAL}..."
+for i in {1..120}; do
+  (echo > /dev/tcp/${DB2_HOST}/${DB2_PORT_VAL}) >/dev/null 2>&1 && echo "DB2 is reachable" && exit 0
+  sleep 5
+done
+echo "DB2 not reachable after 10 minutes" >&2
+exit 1
+  containers:
+
+        - name: bcm-assessment
+          image: bcm-assessment:latest
+          ports:
+            - containerPort: 8080
+envFrom:
+  - secretRef:
+      name: db2-conn
+      optional: true
+env:
+
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: bcm-assessment-secret
+                  key: jwtSecret
+            - name: DB_CONNECT_ATTEMPTS
+  value: "60"
+- name: DB_CONNECT_DELAY_MS
+  value: "5000"
+- name: UPLOAD_DIR
+
+              value: /opt/app-root/src/uploads
+          volumeMounts:
+            - name: uploads
+              mountPath: /opt/app-root/src/uploads
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 20
+      volumes:
+        - name: uploads
+          persistentVolumeClaim:
+            claimName: bcm-assessment-uploads
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bcm-assessment-uploads
+spec:
+  accessModes: [ "ReadWriteOnce" ]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bcm-assessment
+spec:
+  selector:
+    app: bcm-assessment
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: bcm-assessment
+spec:
+  to:
+    kind: Service
+    name: bcm-assessment
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bcm-assessment-secret
+type: Opaque
+stringData:
+  jwtSecret: "CHANGE_ME"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db2-secret
+type: Opaque
+stringData:
+  password: "passw0rd"

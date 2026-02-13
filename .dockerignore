@@ -1,0 +1,8 @@
+**/node_modules
+**/.npm
+**/.cache
+**/dist
+**/build
+.git
+*.log
+.DS_Store
